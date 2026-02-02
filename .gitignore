@@ -1,0 +1,25 @@
+# Zig build artifacts
+zig-out/
+.zig-cache/
+
+# SQLite databases (generated at runtime)
+*.db
+*.db-wal
+*.db-shm
+
+# Monitoring data files (large, collected at runtime)
+*.lsof
+*.ss
+*.status
+process.ndjson
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
