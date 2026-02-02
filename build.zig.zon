@@ -1,6 +1,12 @@
 .{
     .name = .agent_watch,
     .version = "0.1.0",
+    .dependencies = .{
+        .raylib = .{
+            .url = "git+https://github.com/raysan5/raylib#403c2cbccff44cac0c0bbae034c00191eeee7b4c",
+            .hash = "raylib-5.6.0-dev-whq8uKAqDQWosMsUzhDBAbuDSmbxaqJeydmpgv5e8wzU",
+        },
+    },
     .fingerprint = 0x69a5625e96fce8fd,
     .minimum_zig_version = "0.15.0",
     .paths = .{

@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const enable_gui = b.option(bool, "enable-gui", "Build with raylib GUI support") orelse false;
 
     // SQLite C library as a static library
     const sqlite_mod = b.createModule(.{
@@ -11,7 +12,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     sqlite_mod.addCSourceFiles(.{
-        .files = &.{"lib/sqlite3.c"},
+        .files = &.{ "lib/sqlite3.c", "lib/sqlite3_helpers.c" },
         .flags = &.{
             "-DSQLITE_THREADSAFE=1",
             "-DSQLITE_ENABLE_WAL=1",
@@ -20,6 +21,7 @@ pub fn build(b: *std.Build) void {
             "-DSQLITE_DQS=0",
         },
     });
+    sqlite_mod.addIncludePath(b.path("lib"));
 
     const sqlite_lib = b.addLibrary(.{
         .name = "sqlite3",
@@ -36,10 +38,37 @@ pub fn build(b: *std.Build) void {
     exe_mod.addIncludePath(b.path("lib"));
     exe_mod.linkLibrary(sqlite_lib);
 
+    // Conditionally link raylib for GUI support
+    if (enable_gui) {
+        const raylib_dep = b.dependency("raylib", .{
+            .target = target,
+            .optimize = optimize,
+            .linkage = @as(std.builtin.LinkMode, .dynamic),
+        });
+        const raylib_lib = raylib_dep.artifact("raylib");
+        exe_mod.linkLibrary(raylib_lib);
+        // Install libraylib.so into bin/ so $ORIGIN rpath finds it
+        b.getInstallStep().dependOn(&b.addInstallFileWithDir(
+            raylib_lib.getEmittedBin(),
+            .bin,
+            "libraylib.so",
+        ).step);
+    }
+
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "enable_gui", enable_gui);
+    exe_mod.addOptions("build_options", build_options);
+
     const exe = b.addExecutable(.{
         .name = "agent-watch",
         .root_module = exe_mod,
     });
+
+    // Set rpath so the binary can find libraylib.so next to itself or in ../lib
+    if (enable_gui) {
+        exe.root_module.addRPath(.{ .cwd_relative = "$ORIGIN" });
+        exe.root_module.addRPath(.{ .cwd_relative = "$ORIGIN/../lib" });
+    }
 
     b.installArtifact(exe);
 
@@ -61,6 +90,10 @@ pub fn build(b: *std.Build) void {
     });
     test_mod.addIncludePath(b.path("lib"));
     test_mod.linkLibrary(sqlite_lib);
+
+    const test_build_options = b.addOptions();
+    test_build_options.addOption(bool, "enable_gui", false);
+    test_mod.addOptions("build_options", test_build_options);
 
     const unit_tests = b.addTest(.{
         .root_module = test_mod,

@@ -121,3 +121,74 @@ pub fn evaluate(
 
     return alerts;
 }
+
+const testing = std.testing;
+const helpers = @import("../testing/helpers.zig");
+
+fn countAlerts(results: [8]?AlertCheck) usize {
+    var count: usize = 0;
+    for (results) |r| {
+        if (r != null) count += 1;
+    }
+    return count;
+}
+
+test "evaluate: no alerts below thresholds" {
+    const sample = helpers.makeSample(.{ .cpu = 10.0, .rss_kb = 50000 });
+    const results = evaluate(sample, null, 50, .{});
+    try testing.expectEqual(@as(usize, 0), countAlerts(results));
+}
+
+test "evaluate: CPU warning" {
+    const sample = helpers.makeSample(.{ .cpu = 85.0, .rss_kb = 50000 });
+    const results = evaluate(sample, null, 50, .{});
+    try testing.expectEqual(@as(usize, 1), countAlerts(results));
+    try testing.expectEqual(types.Alert.Severity.warning, results[0].?.severity);
+    try testing.expectEqualStrings("cpu", results[0].?.category);
+}
+
+test "evaluate: CPU critical" {
+    const sample = helpers.makeSample(.{ .cpu = 97.0, .rss_kb = 50000 });
+    const results = evaluate(sample, null, 50, .{});
+    try testing.expectEqual(@as(usize, 1), countAlerts(results));
+    try testing.expectEqual(types.Alert.Severity.critical, results[0].?.severity);
+}
+
+test "evaluate: RSS warning" {
+    // 2048 MB = 2097152 KB
+    const sample = helpers.makeSample(.{ .cpu = 5.0, .rss_kb = 2200000 });
+    const results = evaluate(sample, null, 50, .{});
+    try testing.expectEqual(@as(usize, 1), countAlerts(results));
+    try testing.expectEqualStrings("memory", results[0].?.category);
+}
+
+test "evaluate: FD warning" {
+    const sample = helpers.makeSample(.{ .cpu = 5.0, .rss_kb = 50000 });
+    const results = evaluate(sample, null, 1500, .{});
+    try testing.expectEqual(@as(usize, 1), countAlerts(results));
+    try testing.expectEqualStrings("fd", results[0].?.category);
+}
+
+test "evaluate: thread warning with status" {
+    const sample = helpers.makeSample(.{ .cpu = 5.0, .rss_kb = 50000 });
+    const status = helpers.makeStatus(.{ .threads = 150 });
+    const results = evaluate(sample, status, 50, .{});
+    try testing.expectEqual(@as(usize, 1), countAlerts(results));
+    try testing.expectEqualStrings("threads", results[0].?.category);
+}
+
+test "evaluate: multiple alerts simultaneously" {
+    const sample = helpers.makeSample(.{ .cpu = 97.0, .rss_kb = 5000000 });
+    const status = helpers.makeStatus(.{ .threads = 600 });
+    const results = evaluate(sample, status, 6000, .{});
+    // CPU critical + RSS critical + FD critical + thread critical
+    try testing.expectEqual(@as(usize, 4), countAlerts(results));
+}
+
+test "evaluate: thread critical" {
+    const sample = helpers.makeSample(.{ .cpu = 5.0, .rss_kb = 50000 });
+    const status = helpers.makeStatus(.{ .threads = 600 });
+    const results = evaluate(sample, status, 50, .{});
+    try testing.expectEqual(@as(usize, 1), countAlerts(results));
+    try testing.expectEqual(types.Alert.Severity.critical, results[0].?.severity);
+}

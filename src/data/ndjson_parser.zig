@@ -3,18 +3,17 @@ const types = @import("types.zig");
 const writer_mod = @import("../store/writer.zig");
 
 /// Import process.ndjson file into SQLite
-pub fn importNdjson(path: []const u8, writer: *writer_mod.Writer) !ImportResult {
+pub fn importNdjson(alloc: std.mem.Allocator, path: []const u8, writer: *writer_mod.Writer) !ImportResult {
     var result = ImportResult{};
 
     const file = try std.fs.openFileAbsolute(path, .{});
     defer file.close();
 
-    var buf_reader = std.io.bufferedReader(file.reader());
-    const reader = buf_reader.reader();
+    const data = file.readToEndAlloc(alloc, 64 * 1024 * 1024) catch return result;
+    defer alloc.free(data);
 
-    var line_buf: [16384]u8 = undefined;
-
-    while (reader.readUntilDelimiter(&line_buf, '\n')) |line| {
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
         if (line.len == 0) continue;
         result.lines_read += 1;
 
@@ -30,8 +29,6 @@ pub fn importNdjson(path: []const u8, writer: *writer_mod.Writer) !ImportResult 
 
         writer.upsertAgent(sample.pid, sample.comm, sample.args, sample.ts) catch {};
         result.samples_written += 1;
-    } else |err| {
-        if (err != error.EndOfStream) return err;
     }
 
     return result;
@@ -108,3 +105,82 @@ pub const ImportResult = struct {
     parse_errors: usize = 0,
     write_errors: usize = 0,
 };
+
+const testing = std.testing;
+const helpers = @import("../testing/helpers.zig");
+
+test "extractString: finds value" {
+    const json = "{\"user\":\"admin\",\"pid\":42}";
+    const val = extractString(json, "\"user\":\"", "\"");
+    try testing.expect(val != null);
+    try testing.expectEqualStrings("admin", val.?);
+}
+
+test "extractString: missing prefix returns null" {
+    const json = "{\"pid\":42}";
+    try testing.expect(extractString(json, "\"user\":\"", "\"") == null);
+}
+
+test "extractString: empty value" {
+    const json = "{\"args\":\"\"}";
+    const val = extractString(json, "\"args\":\"", "\"");
+    try testing.expect(val != null);
+    try testing.expectEqualStrings("", val.?);
+}
+
+test "extractInt: finds integer" {
+    const json = "{\"pid\":12345,\"cpu\":1.5}";
+    const val = extractInt(i32, json, "\"pid\":");
+    try testing.expect(val != null);
+    try testing.expectEqual(@as(i32, 12345), val.?);
+}
+
+test "extractInt: negative integer" {
+    const json = "{\"offset\":-100}";
+    const val = extractInt(i64, json, "\"offset\":");
+    try testing.expect(val != null);
+    try testing.expectEqual(@as(i64, -100), val.?);
+}
+
+test "extractInt: missing returns null" {
+    const json = "{\"pid\":42}";
+    try testing.expect(extractInt(i32, json, "\"missing\":") == null);
+}
+
+test "extractFloat: finds float" {
+    const json = "{\"cpu\":45.67,\"pid\":1}";
+    const val = extractFloat(json, "\"cpu\":");
+    try testing.expect(val != null);
+    try helpers.expectApproxEqual(45.67, val.?, 0.001);
+}
+
+test "extractFloat: integer as float" {
+    const json = "{\"cpu\":100}";
+    const val = extractFloat(json, "\"cpu\":");
+    try testing.expect(val != null);
+    try helpers.expectApproxEqual(100.0, val.?, 0.001);
+}
+
+test "parseLine: valid NDJSON" {
+    const line = "{\"ts\":\"2026-02-01T12:00:00Z\",\"pid\":42,\"user\":\"root\",\"cpu\":5.5,\"mem\":1.2,\"rss_kb\":102400,\"stat\":\"S\",\"etimes\":3600,\"comm\":\"claude\",\"args\":\"claude --code\"}";
+    const sample = try parseLine(line);
+    try testing.expectEqual(@as(i32, 42), sample.pid);
+    try testing.expectEqualStrings("root", sample.user);
+    try helpers.expectApproxEqual(5.5, sample.cpu, 0.01);
+    try testing.expectEqualStrings("claude", sample.comm);
+}
+
+test "parseLine: missing pid returns error" {
+    const line = "{\"ts\":\"2026-02-01T12:00:00Z\",\"user\":\"root\"}";
+    try testing.expectError(error.ParseError, parseLine(line));
+}
+
+test "parseLine: empty line" {
+    // parseLine is called only on non-empty lines by importNdjson
+    // but it should handle bad input gracefully
+    try testing.expectError(error.ParseError, parseLine(""));
+}
+
+test "parseLine: malformed JSON" {
+    try testing.expectError(error.ParseError, parseLine("not json at all"));
+}

@@ -30,3 +30,38 @@ pub fn buildInventory(conns: []const types.NetConnection) ConnectionInventory {
 
     return inv;
 }
+
+const testing = std.testing;
+const helpers = @import("../testing/helpers.zig");
+
+test "buildInventory: empty input" {
+    const conns: []const types.NetConnection = &.{};
+    const inv = buildInventory(conns);
+    try testing.expectEqual(@as(usize, 0), inv.total);
+    try testing.expectEqual(@as(usize, 0), inv.established);
+}
+
+test "buildInventory: counts ESTABLISHED" {
+    const conns = [_]types.NetConnection{
+        helpers.makeNetConnection(.{ .state = "ESTABLISHED" }),
+        helpers.makeNetConnection(.{ .state = "ESTABLISHED" }),
+    };
+    const inv = buildInventory(&conns);
+    try testing.expectEqual(@as(usize, 2), inv.total);
+    try testing.expectEqual(@as(usize, 2), inv.established);
+}
+
+test "buildInventory: counts all states" {
+    const conns = [_]types.NetConnection{
+        helpers.makeNetConnection(.{ .state = "ESTABLISHED" }),
+        helpers.makeNetConnection(.{ .state = "LISTEN" }),
+        helpers.makeNetConnection(.{ .state = "TIME_WAIT" }),
+        helpers.makeNetConnection(.{ .state = "SYN_SENT" }),
+    };
+    const inv = buildInventory(&conns);
+    try testing.expectEqual(@as(usize, 4), inv.total);
+    try testing.expectEqual(@as(usize, 1), inv.established);
+    try testing.expectEqual(@as(usize, 1), inv.listening);
+    try testing.expectEqual(@as(usize, 1), inv.time_wait);
+    try testing.expectEqual(@as(usize, 1), inv.other);
+}

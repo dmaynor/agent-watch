@@ -5,7 +5,7 @@ pub const InputEvent = union(enum) {
     none,
 };
 
-pub const Key = enum {
+pub const Key = union(enum) {
     up,
     down,
     left,
@@ -19,5 +19,7 @@ pub const Key = enum {
     char_q,
     char_j,
     char_k,
+    backspace,
+    char: u8,
     other,
 };

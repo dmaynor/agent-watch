@@ -1,3 +1,5 @@
+const std = @import("std");
+
 /// Pipeline phase detection: idle, active, burst
 pub const Phase = enum {
     idle,
@@ -25,4 +27,32 @@ pub fn detectPhase(cpu: f64, state: []const u8) Phase {
     if (cpu < 1.0) return .idle;
     // Active: moderate CPU
     return .active;
+}
+
+const testing = std.testing;
+
+test "detectPhase: high CPU is burst" {
+    try testing.expectEqual(Phase.burst, detectPhase(90.0, "S"));
+}
+
+test "detectPhase: running with moderate CPU is burst" {
+    try testing.expectEqual(Phase.burst, detectPhase(30.0, "R"));
+}
+
+test "detectPhase: running with low CPU is active" {
+    try testing.expectEqual(Phase.active, detectPhase(5.0, "R"));
+}
+
+test "detectPhase: sleeping with low CPU is idle" {
+    try testing.expectEqual(Phase.idle, detectPhase(0.5, "S"));
+}
+
+test "detectPhase: moderate CPU sleeping is active" {
+    try testing.expectEqual(Phase.active, detectPhase(20.0, "S"));
+}
+
+test "Phase toString roundtrip" {
+    try testing.expectEqualStrings("idle", Phase.idle.toString());
+    try testing.expectEqualStrings("active", Phase.active.toString());
+    try testing.expectEqualStrings("burst", Phase.burst.toString());
 }

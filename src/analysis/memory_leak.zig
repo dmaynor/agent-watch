@@ -80,3 +80,52 @@ pub const LeakReport = struct {
     start_rss_kb: f64,
     end_rss_kb: f64,
 };
+
+const testing = std.testing;
+const helpers = @import("../testing/helpers.zig");
+
+test "linearRegression: positive slope" {
+    const values = [_]f64{ 100, 200, 300, 400, 500 };
+    const result = linearRegression(&values).?;
+    try helpers.expectApproxEqual(100.0, result.slope, 0.01);
+    try helpers.expectApproxEqual(100.0, result.intercept, 0.01);
+    try helpers.expectApproxEqual(1.0, result.r_squared, 0.01);
+}
+
+test "linearRegression: flat data" {
+    const values = [_]f64{ 500, 500, 500, 500 };
+    const result = linearRegression(&values);
+    // Flat data: slope ~0, denom might be degenerate
+    if (result) |r| {
+        try helpers.expectApproxEqual(0.0, r.slope, 0.01);
+    }
+}
+
+test "linearRegression: too few values" {
+    const values = [_]f64{ 100, 200 };
+    try testing.expect(linearRegression(&values) == null);
+}
+
+test "linearRegression: r_squared quality" {
+    // Perfect linear data should have r² = 1.0
+    const values = [_]f64{ 10, 20, 30, 40, 50 };
+    const result = linearRegression(&values).?;
+    try helpers.expectApproxEqual(1.0, result.r_squared, 0.001);
+}
+
+test "detectLeak: growing RSS detected" {
+    // RSS growing by 100 KB per sample
+    var values: [50]f64 = undefined;
+    for (0..50) |i| values[i] = 1000.0 + @as(f64, @floatFromInt(i)) * 100.0;
+    const report = detectLeak(&values, 10.0);
+    try testing.expect(report != null);
+    try helpers.expectApproxEqual(100.0, report.?.slope_kb_per_sample, 1.0);
+}
+
+test "detectLeak: flat RSS not detected" {
+    var values: [50]f64 = undefined;
+    for (0..50) |i| _ = i;
+    @memset(&values, 5000.0);
+    const report = detectLeak(&values, 10.0);
+    try testing.expect(report == null);
+}

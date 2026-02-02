@@ -48,3 +48,25 @@ pub fn similarity(a: *const Fingerprint, b: *const Fingerprint) f64 {
     if (factors == 0) return 0;
     return score / factors;
 }
+
+const testing = std.testing;
+const helpers = @import("../testing/helpers.zig");
+
+test "similarity: identical fingerprints score 1.0" {
+    const a = Fingerprint{ .pid = 1, .comm = "test", .avg_cpu = 50.0, .avg_rss_kb = 1000, .avg_threads = 10 };
+    const b = Fingerprint{ .pid = 2, .comm = "test", .avg_cpu = 50.0, .avg_rss_kb = 1000, .avg_threads = 10 };
+    try helpers.expectApproxEqual(1.0, similarity(&a, &b), 0.001);
+}
+
+test "similarity: completely different fingerprints score near 0" {
+    const a = Fingerprint{ .pid = 1, .comm = "test", .avg_cpu = 1.0, .avg_rss_kb = 100, .avg_threads = 1 };
+    const b = Fingerprint{ .pid = 2, .comm = "test", .avg_cpu = 100.0, .avg_rss_kb = 100000, .avg_threads = 100 };
+    const s = similarity(&a, &b);
+    try testing.expect(s < 0.2);
+}
+
+test "similarity: all zeros returns 0" {
+    const a = Fingerprint{ .pid = 1, .comm = "test" };
+    const b = Fingerprint{ .pid = 2, .comm = "test" };
+    try helpers.expectApproxEqual(0.0, similarity(&a, &b), 0.001);
+}

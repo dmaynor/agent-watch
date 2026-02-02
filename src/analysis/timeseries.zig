@@ -90,3 +90,96 @@ pub const RollingStats = struct {
         return buf[0..n];
     }
 };
+
+const testing = std.testing;
+const helpers = @import("../testing/helpers.zig");
+
+test "RollingStats: init and deinit" {
+    var rs = try RollingStats.init(testing.allocator, 10);
+    defer rs.deinit();
+    try testing.expectEqual(@as(usize, 0), rs.count);
+}
+
+test "RollingStats: push and count" {
+    var rs = try RollingStats.init(testing.allocator, 5);
+    defer rs.deinit();
+    rs.push(1.0);
+    rs.push(2.0);
+    rs.push(3.0);
+    try testing.expectEqual(@as(usize, 3), rs.count);
+}
+
+test "RollingStats: mean" {
+    var rs = try RollingStats.init(testing.allocator, 10);
+    defer rs.deinit();
+    rs.push(2.0);
+    rs.push(4.0);
+    rs.push(6.0);
+    try helpers.expectApproxEqual(4.0, rs.avg(), 0.001);
+}
+
+test "RollingStats: stddev" {
+    var rs = try RollingStats.init(testing.allocator, 10);
+    defer rs.deinit();
+    const vals = [_]f64{ 2, 4, 4, 4, 5, 5, 7, 9 };
+    for (vals) |v| rs.push(v);
+    const sd = rs.stddev();
+    try helpers.expectApproxEqual(2.138, sd, 0.01);
+}
+
+test "RollingStats: min and max" {
+    var rs = try RollingStats.init(testing.allocator, 10);
+    defer rs.deinit();
+    rs.push(5.0);
+    rs.push(1.0);
+    rs.push(9.0);
+    rs.push(3.0);
+    try helpers.expectApproxEqual(1.0, rs.min(), 0.001);
+    try helpers.expectApproxEqual(9.0, rs.max(), 0.001);
+}
+
+test "RollingStats: empty stats return zero" {
+    var rs = try RollingStats.init(testing.allocator, 10);
+    defer rs.deinit();
+    try helpers.expectApproxEqual(0.0, rs.avg(), 0.001);
+    try helpers.expectApproxEqual(0.0, rs.min(), 0.001);
+    try helpers.expectApproxEqual(0.0, rs.max(), 0.001);
+    try helpers.expectApproxEqual(0.0, rs.stddev(), 0.001);
+}
+
+test "RollingStats: percentile" {
+    var rs = try RollingStats.init(testing.allocator, 10);
+    defer rs.deinit();
+    for (1..11) |i| rs.push(@floatFromInt(i));
+    const p50 = rs.percentile(50);
+    try helpers.expectApproxEqual(5.0, p50, 0.5);
+    const p90 = rs.percentile(90);
+    try helpers.expectApproxEqual(9.0, p90, 0.5);
+}
+
+test "RollingStats: buffer wrap around" {
+    var rs = try RollingStats.init(testing.allocator, 3);
+    defer rs.deinit();
+    rs.push(1.0);
+    rs.push(2.0);
+    rs.push(3.0);
+    rs.push(4.0); // wraps, buffer now: [4, 2, 3] logically [2, 3, 4]
+    try testing.expectEqual(@as(usize, 3), rs.count);
+    try helpers.expectApproxEqual(3.0, rs.avg(), 0.001);
+    try helpers.expectApproxEqual(2.0, rs.min(), 0.001);
+    try helpers.expectApproxEqual(4.0, rs.max(), 0.001);
+}
+
+test "RollingStats: recentValues" {
+    var rs = try RollingStats.init(testing.allocator, 5);
+    defer rs.deinit();
+    rs.push(10.0);
+    rs.push(20.0);
+    rs.push(30.0);
+    var buf: [5]f64 = undefined;
+    const recent = rs.recentValues(&buf);
+    try testing.expectEqual(@as(usize, 3), recent.len);
+    try helpers.expectApproxEqual(30.0, recent[0], 0.001);
+    try helpers.expectApproxEqual(20.0, recent[1], 0.001);
+    try helpers.expectApproxEqual(10.0, recent[2], 0.001);
+}

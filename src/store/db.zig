@@ -1,8 +1,15 @@
 const std = @import("std");
-const c = @cImport({
+pub const c = @cImport({
     @cInclude("sqlite3.h");
 });
 const schema = @import("schema.zig");
+
+// Wrapper for sqlite3_bind_text with SQLITE_TRANSIENT (avoids Zig 0.15 pointer alignment issue)
+extern fn aw_sqlite3_bind_text_transient(stmt: *c.sqlite3_stmt, col: c_int, text: [*]const u8, len: c_int) c_int;
+
+fn bindTextTransient(stmt: *c.sqlite3_stmt, col: c_int, text: [*]const u8, len: c_int) c_int {
+    return aw_sqlite3_bind_text_transient(stmt, col, text, len);
+}
 
 pub const SqliteError = error{
     OpenFailed,
@@ -143,7 +150,7 @@ pub const Statement = struct {
     }
 
     pub fn bindText(self: *Statement, col: c_int, val: []const u8) !void {
-        if (c.sqlite3_bind_text(self.handle, col, val.ptr, @intCast(val.len), c.SQLITE_TRANSIENT) != c.SQLITE_OK)
+        if (bindTextTransient(self.handle, col, val.ptr, @intCast(val.len)) != c.SQLITE_OK)
             return SqliteError.BindFailed;
     }
 
@@ -183,3 +190,62 @@ pub const Statement = struct {
         row,
     };
 };
+
+const testing = std.testing;
+
+test "Db: open and close in-memory" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+}
+
+test "Db: prepare and step" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+
+    var stmt = try db.prepare("SELECT 42 AS val");
+    defer stmt.deinit();
+
+    const result = try stmt.step();
+    try testing.expectEqual(Statement.StepResult.row, result);
+    try testing.expectEqual(@as(i32, 42), stmt.columnI32(0));
+
+    const result2 = try stmt.step();
+    try testing.expectEqual(Statement.StepResult.done, result2);
+}
+
+test "Db: bind and query" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+
+    var stmt = try db.prepare("SELECT ?1 + ?2 AS result");
+    defer stmt.deinit();
+    try stmt.bindI32(1, 10);
+    try stmt.bindI32(2, 20);
+    const result = try stmt.step();
+    try testing.expectEqual(Statement.StepResult.row, result);
+    try testing.expectEqual(@as(i32, 30), stmt.columnI32(0));
+}
+
+test "Db: lastInsertRowId" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    // Schema already applied, insert into agent table
+    var stmt = try db.prepare("INSERT INTO agent (pid, comm, args, first_seen, last_seen, alive) VALUES (?1, ?2, ?3, ?4, ?5, 1)");
+    defer stmt.deinit();
+    try stmt.bindI32(1, 42);
+    try stmt.bindText(2, "test");
+    try stmt.bindText(3, "test --arg");
+    try stmt.bindI64(4, 1000);
+    try stmt.bindI64(5, 1000);
+    _ = try stmt.step();
+    try testing.expectEqual(@as(i64, 1), db.lastInsertRowId());
+}
+
+test "Db: columnText returns empty for null" {
+    var db = try Db.open(":memory:");
+    defer db.close();
+    var stmt = try db.prepare("SELECT NULL");
+    defer stmt.deinit();
+    _ = try stmt.step();
+    try testing.expectEqualStrings("", stmt.columnText(0));
+}

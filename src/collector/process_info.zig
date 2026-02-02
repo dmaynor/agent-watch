@@ -67,3 +67,41 @@ pub fn collectSample(pid: i32, comm: []const u8, args: []const u8, user: []const
         .args = args,
     };
 }
+
+const testing = std.testing;
+
+test "collectSample: self process returns valid data" {
+    const my_pid = @as(i32, @intCast(std.c.getpid()));
+    const now = std.time.timestamp();
+    const sample = try collectSample(my_pid, "zig-test", "zig build test", "testuser", now);
+    try testing.expectEqual(my_pid, sample.pid);
+    try testing.expectEqualStrings("zig-test", sample.comm);
+    try testing.expectEqualStrings("zig build test", sample.args);
+    try testing.expect(sample.rss_kb > 0);
+    try testing.expect(sample.cpu >= 0);
+}
+
+test "collectSample: nonexistent PID returns fallback" {
+    const sample = try collectSample(-999, "ghost", "ghost --run", "nobody", 1000);
+    try testing.expectEqual(@as(i32, -999), sample.pid);
+    try testing.expectEqualStrings("ghost", sample.comm);
+    try testing.expectEqual(@as(f64, 0), sample.cpu);
+    try testing.expectEqual(@as(i64, 0), sample.rss_kb);
+    try testing.expectEqualStrings("?", sample.stat);
+}
+
+test "collectSample: state string mapping" {
+    // Self-process should have a valid state (R, S, D, etc.)
+    const my_pid = @as(i32, @intCast(std.c.getpid()));
+    const sample = try collectSample(my_pid, "test", "test", "user", std.time.timestamp());
+    // State should be one of the known strings
+    const valid = std.mem.eql(u8, sample.stat, "R") or
+        std.mem.eql(u8, sample.stat, "S") or
+        std.mem.eql(u8, sample.stat, "D") or
+        std.mem.eql(u8, sample.stat, "Z") or
+        std.mem.eql(u8, sample.stat, "T") or
+        std.mem.eql(u8, sample.stat, "W") or
+        std.mem.eql(u8, sample.stat, "X") or
+        std.mem.eql(u8, sample.stat, "?");
+    try testing.expect(valid);
+}

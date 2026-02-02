@@ -6,8 +6,7 @@ const Allocator = std.mem.Allocator;
 /// Read contents of a /proc file into a buffer
 pub fn readProcFile(buf: []u8, comptime fmt: []const u8, args: anytype) ![]const u8 {
     var path_buf: [256]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, fmt, args) catch return error.PathTooLong;
-    const path_z = std.fmt.bufPrintZ(&path_buf, "{s}", .{path}) catch return error.PathTooLong;
+    const path_z = std.fmt.bufPrintZ(&path_buf, fmt, args) catch return error.PathTooLong;
     const file = std.fs.openFileAbsoluteZ(path_z, .{}) catch return error.ProcReadFailed;
     defer file.close();
     const n = file.read(buf) catch return error.ProcReadFailed;
@@ -16,20 +15,20 @@ pub fn readProcFile(buf: []u8, comptime fmt: []const u8, args: anytype) ![]const
 
 /// List all numeric PIDs in /proc
 pub fn listPids(alloc: Allocator) ![]i32 {
-    var pids = std.ArrayList(i32).init(alloc);
-    errdefer pids.deinit();
+    var pids: std.ArrayList(i32) = .empty;
+    errdefer pids.deinit(alloc);
 
-    var dir = std.fs.openDirAbsolute("/proc", .{ .iterate = true }) catch return pids.toOwnedSlice();
+    var dir = std.fs.openDirAbsolute("/proc", .{ .iterate = true }) catch return pids.toOwnedSlice(alloc);
     defer dir.close();
 
     var iter = dir.iterate();
     while (iter.next() catch null) |entry| {
         if (entry.kind != .directory) continue;
         const pid = std.fmt.parseInt(i32, entry.name, 10) catch continue;
-        try pids.append(pid);
+        try pids.append(alloc, pid);
     }
 
-    return pids.toOwnedSlice();
+    return pids.toOwnedSlice(alloc);
 }
 
 /// Read /proc/PID/cmdline (null-separated → space-separated)
@@ -39,7 +38,8 @@ pub fn readCmdline(alloc: Allocator, pid: i32) ![]const u8 {
     if (data.len == 0) return alloc.dupe(u8, "");
 
     // Replace null bytes with spaces
-    var result = try alloc.alloc(u8, data.len);
+    const result = try alloc.alloc(u8, data.len);
+    errdefer alloc.free(result);
     for (data, 0..) |byte, i| {
         result[i] = if (byte == 0) ' ' else byte;
     }
@@ -165,15 +165,18 @@ pub fn listFds(alloc: Allocator, pid: i32) ![]types.FdRecord {
     var dir = std.fs.openDirAbsoluteZ(path, .{ .iterate = true }) catch return alloc.alloc(types.FdRecord, 0);
     defer dir.close();
 
-    var fds = std.ArrayList(types.FdRecord).init(alloc);
-    errdefer fds.deinit();
+    var fds: std.ArrayList(types.FdRecord) = .empty;
+    errdefer {
+        for (fds.items) |fd| alloc.free(fd.path);
+        fds.deinit(alloc);
+    }
 
     var iter = dir.iterate();
     while (iter.next() catch null) |entry| {
         const fd_num = std.fmt.parseInt(i32, entry.name, 10) catch continue;
 
         // Read the symlink target
-        var link_buf: [1024]u8 = undefined;
+        var link_buf: [std.fs.max_path_bytes]u8 = undefined;
         var fd_path_buf: [128]u8 = undefined;
         const fd_path = std.fmt.bufPrintZ(&fd_path_buf, "/proc/{d}/fd/{s}", .{ pid, entry.name }) catch continue;
         const target = std.fs.readLinkAbsoluteZ(fd_path, &link_buf) catch "unknown";
@@ -191,7 +194,7 @@ pub fn listFds(alloc: Allocator, pid: i32) ![]types.FdRecord {
         else
             .regular;
 
-        try fds.append(.{
+        try fds.append(alloc, .{
             .ts = 0,
             .pid = pid,
             .fd_num = fd_num,
@@ -200,7 +203,7 @@ pub fn listFds(alloc: Allocator, pid: i32) ![]types.FdRecord {
         });
     }
 
-    return fds.toOwnedSlice();
+    return fds.toOwnedSlice(alloc);
 }
 
 /// Parse hex IP address from /proc/net/tcp format
@@ -221,8 +224,8 @@ fn formatAddr(buf: []u8, addr: [4]u8) ![]const u8 {
 
 /// Parse /proc/PID/net/tcp and /proc/PID/net/tcp6 for network connections
 pub fn readNetConnections(alloc: Allocator, pid: i32) ![]types.NetConnection {
-    var conns = std.ArrayList(types.NetConnection).init(alloc);
-    errdefer conns.deinit();
+    var conns: std.ArrayList(types.NetConnection) = .empty;
+    errdefer conns.deinit(alloc);
 
     // First, build a set of socket inodes owned by this PID
     var inode_set = std.AutoHashMap(u64, void).init(alloc);
@@ -230,13 +233,13 @@ pub fn readNetConnections(alloc: Allocator, pid: i32) ![]types.NetConnection {
 
     {
         var path_buf: [64]u8 = undefined;
-        const fd_path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/fd", .{pid}) catch return conns.toOwnedSlice();
-        var dir = std.fs.openDirAbsoluteZ(fd_path, .{ .iterate = true }) catch return conns.toOwnedSlice();
+        const fd_path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/fd", .{pid}) catch return conns.toOwnedSlice(alloc);
+        var dir = std.fs.openDirAbsoluteZ(fd_path, .{ .iterate = true }) catch return conns.toOwnedSlice(alloc);
         defer dir.close();
 
         var iter = dir.iterate();
         while (iter.next() catch null) |entry| {
-            var link_buf: [1024]u8 = undefined;
+            var link_buf: [std.fs.max_path_bytes]u8 = undefined;
             var fd_entry_buf: [128]u8 = undefined;
             const entry_path = std.fmt.bufPrintZ(&fd_entry_buf, "/proc/{d}/fd/{s}", .{ pid, entry.name }) catch continue;
             const target = std.fs.readLinkAbsoluteZ(entry_path, &link_buf) catch continue;
@@ -249,16 +252,21 @@ pub fn readNetConnections(alloc: Allocator, pid: i32) ![]types.NetConnection {
     }
 
     // Parse /proc/net/tcp (and tcp6, udp, udp6)
-    const net_files = [_]struct { path: []const u8, proto: types.NetConnection.Protocol }{
-        .{ .path = "/proc/{d}/net/tcp", .proto = .tcp },
-        .{ .path = "/proc/{d}/net/tcp6", .proto = .tcp6 },
-        .{ .path = "/proc/{d}/net/udp", .proto = .udp },
-        .{ .path = "/proc/{d}/net/udp6", .proto = .udp6 },
+    const net_suffixes = [_]struct { suffix: []const u8, proto: types.NetConnection.Protocol, is_ipv4: bool }{
+        .{ .suffix = "/net/tcp", .proto = .tcp, .is_ipv4 = true },
+        .{ .suffix = "/net/tcp6", .proto = .tcp6, .is_ipv4 = false },
+        .{ .suffix = "/net/udp", .proto = .udp, .is_ipv4 = true },
+        .{ .suffix = "/net/udp6", .proto = .udp6, .is_ipv4 = false },
     };
 
-    for (net_files) |nf| {
+    for (net_suffixes) |nf| {
+        var path_buf2: [128]u8 = undefined;
+        const net_path = std.fmt.bufPrintZ(&path_buf2, "/proc/{d}{s}", .{ pid, nf.suffix }) catch continue;
+        const file = std.fs.openFileAbsoluteZ(net_path, .{}) catch continue;
+        defer file.close();
         var buf: [65536]u8 = undefined;
-        const data = readProcFile(&buf, nf.path, .{pid}) catch continue;
+        const n = file.read(&buf) catch continue;
+        const data = buf[0..n];
 
         var lines = std.mem.splitScalar(u8, data, '\n');
         _ = lines.next(); // skip header
@@ -291,14 +299,14 @@ pub fn readNetConnections(alloc: Allocator, pid: i32) ![]types.NetConnection {
             var local_addr_buf: [64]u8 = undefined;
             var remote_addr_buf: [64]u8 = undefined;
 
-            const local_addr_str = if (nf.proto == .tcp or nf.proto == .udp) blk: {
+            const local_addr_str = if (nf.is_ipv4) blk: {
                 const addr = parseHexAddr(local[0..local_colon]) catch continue;
                 break :blk formatAddr(&local_addr_buf, addr) catch continue;
             } else blk: {
                 break :blk std.fmt.bufPrint(&local_addr_buf, "{s}", .{local[0..local_colon]}) catch continue;
             };
 
-            const remote_addr_str = if (nf.proto == .tcp or nf.proto == .udp) blk: {
+            const remote_addr_str = if (nf.is_ipv4) blk: {
                 const addr = parseHexAddr(remote[0..remote_colon]) catch continue;
                 break :blk formatAddr(&remote_addr_buf, addr) catch continue;
             } else blk: {
@@ -321,7 +329,7 @@ pub fn readNetConnections(alloc: Allocator, pid: i32) ![]types.NetConnection {
                 else => "UNKNOWN",
             };
 
-            try conns.append(.{
+            try conns.append(alloc, .{
                 .ts = 0,
                 .pid = pid,
                 .protocol = nf.proto,
@@ -334,7 +342,52 @@ pub fn readNetConnections(alloc: Allocator, pid: i32) ![]types.NetConnection {
         }
     }
 
-    return conns.toOwnedSlice();
+    return conns.toOwnedSlice(alloc);
+}
+
+/// Read /proc/PID/environ (null-separated key=value pairs)
+/// Returns a slice of heap-allocated strings; caller must free each + the slice.
+pub fn readEnviron(alloc: Allocator, pid: i32) ![][]const u8 {
+    var path_buf: [64]u8 = undefined;
+    const path_z = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/environ", .{pid}) catch return error.PathTooLong;
+    const file = std.fs.openFileAbsoluteZ(path_z, .{}) catch return error.ProcReadFailed;
+    defer file.close();
+
+    var buf: [65536]u8 = undefined;
+    const n = file.read(&buf) catch return error.ProcReadFailed;
+    if (n == 0) return alloc.alloc([]const u8, 0);
+
+    var entries: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (entries.items) |e| alloc.free(e);
+        entries.deinit(alloc);
+    }
+
+    var iter = std.mem.splitScalar(u8, buf[0..n], 0);
+    while (iter.next()) |entry| {
+        if (entry.len == 0) continue;
+        try entries.append(alloc, try alloc.dupe(u8, entry));
+    }
+
+    return entries.toOwnedSlice(alloc);
+}
+
+/// Read /proc/PID/exe symlink target
+pub fn readExePath(alloc: Allocator, pid: i32) ![]const u8 {
+    var path_buf: [64]u8 = undefined;
+    const path_z = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/exe", .{pid}) catch return error.PathTooLong;
+    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target = std.fs.readLinkAbsoluteZ(path_z, &link_buf) catch return alloc.dupe(u8, "(unknown)");
+    return alloc.dupe(u8, target);
+}
+
+/// Read /proc/PID/cwd symlink target
+pub fn readCwd(alloc: Allocator, pid: i32) ![]const u8 {
+    var path_buf: [64]u8 = undefined;
+    const path_z = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/cwd", .{pid}) catch return error.PathTooLong;
+    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target = std.fs.readLinkAbsoluteZ(path_z, &link_buf) catch return alloc.dupe(u8, "(unknown)");
+    return alloc.dupe(u8, target);
 }
 
 /// Get system uptime in seconds from /proc/uptime
@@ -364,4 +417,52 @@ pub fn getBootTime() !i64 {
 pub fn getClkTck() u64 {
     // sysconf(_SC_CLK_TCK) — typically 100 on Linux
     return 100;
+}
+
+const testing = std.testing;
+
+test "parseHexAddr: loopback 0100007F → 127.0.0.1" {
+    const addr = try parseHexAddr("0100007F");
+    try testing.expectEqual(@as(u8, 127), addr[0]);
+    try testing.expectEqual(@as(u8, 0), addr[1]);
+    try testing.expectEqual(@as(u8, 0), addr[2]);
+    try testing.expectEqual(@as(u8, 1), addr[3]);
+}
+
+test "parseHexAddr: all zeros" {
+    const addr = try parseHexAddr("00000000");
+    try testing.expectEqual(@as(u8, 0), addr[0]);
+    try testing.expectEqual(@as(u8, 0), addr[1]);
+    try testing.expectEqual(@as(u8, 0), addr[2]);
+    try testing.expectEqual(@as(u8, 0), addr[3]);
+}
+
+test "parseHexAddr: too short returns error" {
+    try testing.expectError(error.InvalidAddr, parseHexAddr("0100"));
+}
+
+test "parseHexAddr: non-hex returns error" {
+    try testing.expectError(error.InvalidAddr, parseHexAddr("ZZZZZZZZ"));
+}
+
+test "formatAddr: loopback" {
+    var buf: [64]u8 = undefined;
+    const result = try formatAddr(&buf, .{ 127, 0, 0, 1 });
+    try testing.expectEqualStrings("127.0.0.1", result);
+}
+
+test "formatAddr: all zeros" {
+    var buf: [64]u8 = undefined;
+    const result = try formatAddr(&buf, .{ 0, 0, 0, 0 });
+    try testing.expectEqualStrings("0.0.0.0", result);
+}
+
+test "formatAddr: max values" {
+    var buf: [64]u8 = undefined;
+    const result = try formatAddr(&buf, .{ 255, 255, 255, 255 });
+    try testing.expectEqualStrings("255.255.255.255", result);
+}
+
+test "getClkTck returns 100" {
+    try testing.expectEqual(@as(u64, 100), getClkTck());
 }

@@ -7,6 +7,9 @@ const lsof_parser = @import("data/lsof_parser.zig");
 const status_parser = @import("data/status_parser.zig");
 const writer_mod = @import("store/writer.zig");
 const reader_mod = @import("store/reader.zig");
+const report = @import("analysis/report.zig");
+const regression = @import("analysis/regression.zig");
+
 
 fn print(comptime fmt: []const u8, args: anytype) void {
     var buf: [4096]u8 = undefined;
@@ -19,11 +22,27 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    const config = try config_mod.parseArgs(alloc);
+    var config = try config_mod.parseArgs(alloc);
 
     // Handle import subcommand
     if (config.import_path) |import_dir| {
         runImport(alloc, config.db_path, import_dir);
+        return;
+    }
+
+    // Handle analyze subcommand
+    if (config.analyze) {
+        runAnalyze(alloc, config.db_path);
+        return;
+    }
+
+    // Handle baseline subcommands
+    if (config.baseline_save) {
+        runBaselineSave(alloc, config.db_path, config.baseline_label);
+        return;
+    }
+    if (config.baseline_compare) {
+        runBaselineCompare(alloc, config.db_path);
         return;
     }
 
@@ -41,7 +60,127 @@ pub fn main() !void {
     });
 
     // Run event loop
-    try event_loop.run(alloc, &db, config, config.headless);
+    try event_loop.run(alloc, &db, &config, config.headless);
+}
+
+fn runBaselineSave(alloc: std.mem.Allocator, db_path: [:0]const u8, label: []const u8) void {
+    var db = db_mod.Db.open(db_path) catch |err| {
+        print("Failed to open database '{s}': {}\n", .{ db_path, err });
+        return;
+    };
+    defer db.close();
+
+    var reader = reader_mod.Reader.init(&db, alloc);
+    var writer = writer_mod.Writer.init(&db) catch |err| {
+        print("Failed to init writer: {}\n", .{err});
+        return;
+    };
+    defer writer.deinit();
+
+    const fingerprints = reader.getFingerprints() catch |err| {
+        print("Failed to read fingerprints: {}\n", .{err});
+        return;
+    };
+    defer reader_mod.Reader.Fingerprint.freeSlice(alloc, fingerprints);
+
+    if (fingerprints.len == 0) {
+        print("No fingerprints to save. Run the monitor first to collect data.\n", .{});
+        return;
+    }
+
+    const now = std.time.timestamp();
+    writer.beginTransaction() catch {};
+
+    var saved: usize = 0;
+    for (fingerprints) |fp| {
+        writer.writeBaseline(.{
+            .comm = fp.comm,
+            .version = "1.0",
+            .avg_cpu = fp.avg_cpu,
+            .avg_rss_kb = fp.avg_rss_kb,
+            .avg_threads = fp.avg_threads,
+            .avg_fd_count = fp.avg_fd_count,
+            .avg_net_conns = fp.avg_net_conns,
+            .dominant_phase = fp.dominant_phase,
+            .sample_count = fp.sample_count,
+            .created_at = now,
+            .label = label,
+        }) catch continue;
+        saved += 1;
+    }
+
+    writer.commitTransaction() catch {};
+    print("Saved {d} baselines with label '{s}'\n", .{ saved, label });
+}
+
+fn runBaselineCompare(alloc: std.mem.Allocator, db_path: [:0]const u8) void {
+    var db = db_mod.Db.open(db_path) catch |err| {
+        print("Failed to open database '{s}': {}\n", .{ db_path, err });
+        return;
+    };
+    defer db.close();
+
+    var reader = reader_mod.Reader.init(&db, alloc);
+
+    const baselines = reader.getBaselines() catch |err| {
+        print("Failed to read baselines: {}\n", .{err});
+        return;
+    };
+    defer reader_mod.Reader.Baseline.freeSlice(alloc, baselines);
+
+    const fingerprints = reader.getFingerprints() catch |err| {
+        print("Failed to read fingerprints: {}\n", .{err});
+        return;
+    };
+    defer reader_mod.Reader.Fingerprint.freeSlice(alloc, fingerprints);
+
+    if (baselines.len == 0) {
+        print("No baselines saved. Run 'baseline-save' first.\n", .{});
+        return;
+    }
+    if (fingerprints.len == 0) {
+        print("No current fingerprints. Run the monitor first.\n", .{});
+        return;
+    }
+
+    print("Comparing {d} fingerprints against {d} baselines (threshold: 20%%)\n\n", .{ fingerprints.len, baselines.len });
+
+    var total_findings: usize = 0;
+    for (baselines) |baseline| {
+        for (fingerprints) |fp| {
+            if (!std.mem.eql(u8, baseline.comm, fp.comm)) continue;
+
+            const findings = regression.compareFingerprints(baseline, fp, 20.0);
+            for (findings) |finding_opt| {
+                const finding = finding_opt orelse break;
+                print("  [{s}] {s}: {d:.1} -> {d:.1} ({d:.1}%%)\n", .{
+                    finding.comm,
+                    finding.metric,
+                    finding.baseline_val,
+                    finding.current_val,
+                    finding.change_pct,
+                });
+                total_findings += 1;
+            }
+        }
+    }
+
+    if (total_findings == 0) {
+        print("No significant regressions detected.\n", .{});
+    } else {
+        print("\n{d} regression(s) detected.\n", .{total_findings});
+    }
+}
+
+fn runAnalyze(alloc: std.mem.Allocator, db_path: [:0]const u8) void {
+    var db = db_mod.Db.open(db_path) catch |err| {
+        print("Failed to open database '{s}': {}\n", .{ db_path, err });
+        return;
+    };
+    defer db.close();
+
+    var reader = reader_mod.Reader.init(&db, alloc);
+    report.generateReport(alloc, &reader);
 }
 
 fn runImport(alloc: std.mem.Allocator, db_path: [:0]const u8, import_dir: []const u8) void {
@@ -65,7 +204,7 @@ fn runImport(alloc: std.mem.Allocator, db_path: [:0]const u8, import_dir: []cons
 
     writer.beginTransaction() catch {};
 
-    if (ndjson_parser.importNdjson(ndjson_path, &writer)) |ndjson_result| {
+    if (ndjson_parser.importNdjson(alloc, ndjson_path, &writer)) |ndjson_result| {
         print("  process.ndjson: {d} lines, {d} samples, {d} errors\n", .{
             ndjson_result.lines_read,
             ndjson_result.samples_written,
@@ -100,7 +239,7 @@ fn runImport(alloc: std.mem.Allocator, db_path: [:0]const u8, import_dir: []cons
             const result = status_parser.importStatusFile(full_path, &writer) catch continue;
             status_count += result.status_written;
         } else if (std.mem.endsWith(u8, entry.name, ".lsof")) {
-            const result = lsof_parser.importLsofFile(full_path, &writer) catch continue;
+            const result = lsof_parser.importLsofFile(alloc, full_path, &writer) catch continue;
             lsof_count += result.fds_written;
         }
     }
@@ -137,6 +276,10 @@ comptime {
     _ = @import("analysis/context_switch.zig");
     _ = @import("analysis/pipeline.zig");
     _ = @import("analysis/alerts.zig");
+    _ = @import("analysis/engine.zig");
+    _ = @import("analysis/security.zig");
+    _ = @import("analysis/report.zig");
+    _ = @import("analysis/regression.zig");
     _ = @import("ui/state.zig");
     _ = @import("ui/theme.zig");
     _ = @import("ui/input.zig");
@@ -154,4 +297,5 @@ comptime {
     _ = @import("data/ndjson_parser.zig");
     _ = @import("data/lsof_parser.zig");
     _ = @import("data/status_parser.zig");
+    _ = @import("testing/helpers.zig");
 }

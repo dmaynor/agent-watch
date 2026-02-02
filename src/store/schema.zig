@@ -80,6 +80,35 @@ pub const create_tables =
     \\    value REAL NOT NULL DEFAULT 0,
     \\    threshold REAL NOT NULL DEFAULT 0
     \\);
+    \\
+    \\CREATE TABLE IF NOT EXISTS fingerprint (
+    \\    pid INTEGER NOT NULL,
+    \\    comm TEXT NOT NULL,
+    \\    avg_cpu REAL NOT NULL DEFAULT 0,
+    \\    avg_rss_kb REAL NOT NULL DEFAULT 0,
+    \\    avg_threads REAL NOT NULL DEFAULT 0,
+    \\    avg_fd_count REAL NOT NULL DEFAULT 0,
+    \\    avg_net_conns REAL NOT NULL DEFAULT 0,
+    \\    dominant_phase TEXT NOT NULL DEFAULT 'idle',
+    \\    sample_count INTEGER NOT NULL DEFAULT 0,
+    \\    updated_at INTEGER NOT NULL DEFAULT 0,
+    \\    PRIMARY KEY (pid, comm)
+    \\);
+    \\
+    \\CREATE TABLE IF NOT EXISTS fingerprint_baseline (
+    \\    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    \\    comm TEXT NOT NULL,
+    \\    version TEXT NOT NULL DEFAULT '',
+    \\    avg_cpu REAL NOT NULL DEFAULT 0,
+    \\    avg_rss_kb REAL NOT NULL DEFAULT 0,
+    \\    avg_threads REAL NOT NULL DEFAULT 0,
+    \\    avg_fd_count REAL NOT NULL DEFAULT 0,
+    \\    avg_net_conns REAL NOT NULL DEFAULT 0,
+    \\    dominant_phase TEXT NOT NULL DEFAULT 'idle',
+    \\    sample_count INTEGER NOT NULL DEFAULT 0,
+    \\    created_at INTEGER NOT NULL DEFAULT 0,
+    \\    label TEXT NOT NULL DEFAULT ''
+    \\);
 ;
 
 pub const create_indexes =
@@ -93,3 +122,38 @@ pub const create_indexes =
     \\CREATE INDEX IF NOT EXISTS idx_alert_ts ON alert(ts);
     \\CREATE INDEX IF NOT EXISTS idx_agent_pid ON agent(pid);
 ;
+
+const testing = @import("std").testing;
+const helpers = @import("../testing/helpers.zig");
+
+test "schema: tables created in memory db" {
+    var db = try helpers.makeTestDb();
+    defer db.close();
+    // Verify all tables exist by querying them
+    const tables = [_][*:0]const u8{
+        "SELECT COUNT(*) FROM agent",
+        "SELECT COUNT(*) FROM process_sample",
+        "SELECT COUNT(*) FROM status_sample",
+        "SELECT COUNT(*) FROM fd_record",
+        "SELECT COUNT(*) FROM net_connection",
+        "SELECT COUNT(*) FROM metric_rollup",
+        "SELECT COUNT(*) FROM alert",
+        "SELECT COUNT(*) FROM fingerprint",
+        "SELECT COUNT(*) FROM fingerprint_baseline",
+    };
+    for (tables) |sql| {
+        var stmt = try db.prepare(sql);
+        defer stmt.deinit();
+        _ = try stmt.step();
+    }
+}
+
+test "schema: idempotent re-creation" {
+    var db = try helpers.makeTestDb();
+    defer db.close();
+    // Apply schema again (should not fail due to IF NOT EXISTS)
+    const db_mod = @import("db.zig");
+    _ = db_mod; // db.initSchema is private, but execMulti is public
+    try db.execMulti(create_tables);
+    try db.execMulti(create_indexes);
+}

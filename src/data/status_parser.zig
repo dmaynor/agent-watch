@@ -93,3 +93,27 @@ pub const ImportResult = struct {
     status_written: usize = 0,
     write_errors: usize = 0,
 };
+
+const testing = std.testing;
+
+test "parseFilename: valid status filename" {
+    const result = parseFilename("20260201T230250.111574346_64493.status");
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(i32, 64493), result.?.pid);
+}
+
+test "parseFilename: extracts timestamp correctly" {
+    const result = parseFilename("20260201T230250.111574346_64493.status");
+    try testing.expect(result != null);
+    // 2026-02-01T23:02:50Z
+    const expected_ts = types.parseTimestamp("2026-02-01T23:02:50Z") catch unreachable;
+    try testing.expectEqual(expected_ts, result.?.ts);
+}
+
+test "parseFilename: invalid filename" {
+    try testing.expect(parseFilename("invalid.status") == null);
+}
+
+test "parseFilename: missing dot before pid" {
+    try testing.expect(parseFilename("20260201T230250_abc.status") == null);
+}

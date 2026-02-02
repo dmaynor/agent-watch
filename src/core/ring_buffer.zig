@@ -56,3 +56,73 @@ pub fn RingBuffer(comptime T: type) type {
         }
     };
 }
+
+const testing = std.testing;
+
+test "RingBuffer: init and deinit" {
+    var rb = try RingBuffer(i32).init(testing.allocator, 5);
+    defer rb.deinit();
+    try testing.expectEqual(@as(usize, 0), rb.len());
+}
+
+test "RingBuffer: push and latest" {
+    var rb = try RingBuffer(i32).init(testing.allocator, 5);
+    defer rb.deinit();
+    rb.push(10);
+    rb.push(20);
+    try testing.expectEqual(@as(i32, 20), rb.latest().?);
+    try testing.expectEqual(@as(usize, 2), rb.len());
+}
+
+test "RingBuffer: empty latest returns null" {
+    var rb = try RingBuffer(i32).init(testing.allocator, 5);
+    defer rb.deinit();
+    try testing.expect(rb.latest() == null);
+}
+
+test "RingBuffer: wrap around" {
+    var rb = try RingBuffer(i32).init(testing.allocator, 3);
+    defer rb.deinit();
+    rb.push(1);
+    rb.push(2);
+    rb.push(3);
+    rb.push(4); // wraps, oldest (1) replaced
+    try testing.expectEqual(@as(usize, 3), rb.len());
+    try testing.expectEqual(@as(i32, 4), rb.latest().?);
+}
+
+test "RingBuffer: get by age" {
+    var rb = try RingBuffer(i32).init(testing.allocator, 5);
+    defer rb.deinit();
+    rb.push(10);
+    rb.push(20);
+    rb.push(30);
+    try testing.expectEqual(@as(i32, 30), rb.get(0).?); // most recent
+    try testing.expectEqual(@as(i32, 20), rb.get(1).?);
+    try testing.expectEqual(@as(i32, 10), rb.get(2).?);
+    try testing.expect(rb.get(3) == null); // beyond count
+}
+
+test "RingBuffer: toSlice" {
+    var rb = try RingBuffer(i32).init(testing.allocator, 5);
+    defer rb.deinit();
+    rb.push(1);
+    rb.push(2);
+    rb.push(3);
+    var buf: [5]i32 = undefined;
+    const slice = rb.toSlice(&buf);
+    try testing.expectEqual(@as(usize, 3), slice.len);
+    try testing.expectEqual(@as(i32, 1), slice[0]); // oldest first
+    try testing.expectEqual(@as(i32, 2), slice[1]);
+    try testing.expectEqual(@as(i32, 3), slice[2]);
+}
+
+test "RingBuffer: single element" {
+    var rb = try RingBuffer(f64).init(testing.allocator, 1);
+    defer rb.deinit();
+    rb.push(42.0);
+    try testing.expectEqual(@as(f64, 42.0), rb.latest().?);
+    rb.push(99.0); // replaces
+    try testing.expectEqual(@as(f64, 99.0), rb.latest().?);
+    try testing.expectEqual(@as(usize, 1), rb.len());
+}

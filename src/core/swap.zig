@@ -4,6 +4,7 @@ const gui_mod = @import("../gui/renderer.zig");
 const state_mod = @import("../ui/state.zig");
 const reader_mod = @import("../store/reader.zig");
 const input_mod = @import("../ui/input.zig");
+const config_mod = @import("../config.zig");
 
 /// Active renderer type
 pub const RendererType = enum {
@@ -39,8 +40,11 @@ pub const SwapRenderer = struct {
     }
 
     pub fn swap(self: *SwapRenderer) !void {
+        const rl = @import("../gui/raylib_backend.zig");
         switch (self.active) {
             .tui => {
+                // Don't swap to GUI if raylib isn't compiled in
+                if (!rl.enabled) return;
                 if (self.tui) |*t| t.deinit();
                 self.tui = null;
                 self.gui = try gui_mod.GuiRenderer.init(self.alloc);
@@ -55,10 +59,10 @@ pub const SwapRenderer = struct {
         }
     }
 
-    pub fn render(self: *SwapRenderer, ui_state: *state_mod.UiState, reader: *reader_mod.Reader) void {
+    pub fn render(self: *SwapRenderer, ui_state: *state_mod.UiState, reader: *reader_mod.Reader, config: *config_mod.Config) void {
         switch (self.active) {
-            .tui => if (self.tui) |*t| t.render(ui_state, reader),
-            .gui => if (self.gui) |*g| g.render(ui_state, reader),
+            .tui => if (self.tui) |*t| t.render(ui_state, reader, config),
+            .gui => if (self.gui) |*g| g.render(ui_state, reader, config),
         }
     }
 

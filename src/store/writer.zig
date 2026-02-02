@@ -14,6 +14,8 @@ pub const Writer = struct {
     insert_agent: Statement,
     update_agent: Statement,
     insert_alert: Statement,
+    upsert_fingerprint: Statement,
+    insert_baseline: Statement,
 
     pub fn init(db: *Db) !Writer {
         return Writer{
@@ -42,6 +44,14 @@ pub const Writer = struct {
             .insert_alert = try db.prepare(
                 "INSERT INTO alert (ts, pid, severity, category, message, value, threshold) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             ),
+            .upsert_fingerprint = try db.prepare(
+                "INSERT OR REPLACE INTO fingerprint (pid, comm, avg_cpu, avg_rss_kb, avg_threads, avg_fd_count, avg_net_conns, dominant_phase, sample_count, updated_at) " ++
+                    "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            ),
+            .insert_baseline = try db.prepare(
+                "INSERT INTO fingerprint_baseline (comm, version, avg_cpu, avg_rss_kb, avg_threads, avg_fd_count, avg_net_conns, dominant_phase, sample_count, created_at, label) " ++
+                    "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            ),
         };
     }
 
@@ -53,6 +63,8 @@ pub const Writer = struct {
         self.insert_agent.deinit();
         self.update_agent.deinit();
         self.insert_alert.deinit();
+        self.upsert_fingerprint.deinit();
+        self.insert_baseline.deinit();
     }
 
     pub fn beginTransaction(self: *Writer) !void {
@@ -158,9 +170,266 @@ pub const Writer = struct {
         try self.insert_alert.bindF64(7, a.threshold);
         _ = try self.insert_alert.step();
     }
+
+    pub const FingerprintRecord = struct {
+        pid: i32,
+        comm: []const u8,
+        avg_cpu: f64,
+        avg_rss_kb: f64,
+        avg_threads: f64,
+        avg_fd_count: f64,
+        avg_net_conns: f64,
+        dominant_phase: []const u8,
+        sample_count: u32,
+        updated_at: i64,
+    };
+
+    pub fn writeFingerprint(self: *Writer, f: FingerprintRecord) !void {
+        try self.upsert_fingerprint.reset();
+        self.upsert_fingerprint.clearBindings();
+        try self.upsert_fingerprint.bindI32(1, f.pid);
+        try self.upsert_fingerprint.bindText(2, f.comm);
+        try self.upsert_fingerprint.bindF64(3, f.avg_cpu);
+        try self.upsert_fingerprint.bindF64(4, f.avg_rss_kb);
+        try self.upsert_fingerprint.bindF64(5, f.avg_threads);
+        try self.upsert_fingerprint.bindF64(6, f.avg_fd_count);
+        try self.upsert_fingerprint.bindF64(7, f.avg_net_conns);
+        try self.upsert_fingerprint.bindText(8, f.dominant_phase);
+        try self.upsert_fingerprint.bindI32(9, @intCast(f.sample_count));
+        try self.upsert_fingerprint.bindI64(10, f.updated_at);
+        _ = try self.upsert_fingerprint.step();
+    }
+
+    pub const BaselineRecord = struct {
+        comm: []const u8,
+        version: []const u8,
+        avg_cpu: f64,
+        avg_rss_kb: f64,
+        avg_threads: f64,
+        avg_fd_count: f64,
+        avg_net_conns: f64,
+        dominant_phase: []const u8,
+        sample_count: i64,
+        created_at: i64,
+        label: []const u8,
+    };
+
+    pub fn writeBaseline(self: *Writer, b: BaselineRecord) !void {
+        try self.insert_baseline.reset();
+        self.insert_baseline.clearBindings();
+        try self.insert_baseline.bindText(1, b.comm);
+        try self.insert_baseline.bindText(2, b.version);
+        try self.insert_baseline.bindF64(3, b.avg_cpu);
+        try self.insert_baseline.bindF64(4, b.avg_rss_kb);
+        try self.insert_baseline.bindF64(5, b.avg_threads);
+        try self.insert_baseline.bindF64(6, b.avg_fd_count);
+        try self.insert_baseline.bindF64(7, b.avg_net_conns);
+        try self.insert_baseline.bindText(8, b.dominant_phase);
+        try self.insert_baseline.bindI64(9, b.sample_count);
+        try self.insert_baseline.bindI64(10, b.created_at);
+        try self.insert_baseline.bindText(11, b.label);
+        _ = try self.insert_baseline.step();
+    }
 };
 
 const c = @import("db.zig").c;
 
 // Workaround: re-export c for the sqlite3_changes call
 pub const sqlite3_changes = c.sqlite3_changes;
+
+const testing = std.testing;
+const helpers = @import("../testing/helpers.zig");
+
+test "Writer: init and deinit" {
+    var db = try helpers.makeTestDb();
+    defer db.close();
+    var writer = try Writer.init(&db);
+    defer writer.deinit();
+}
+
+test "Writer: writeSample" {
+    var db = try helpers.makeTestDb();
+    defer db.close();
+    var writer = try Writer.init(&db);
+    defer writer.deinit();
+
+    const sample = helpers.makeSample(.{});
+    try writer.writeSample(sample);
+
+    var stmt = try db.prepare("SELECT COUNT(*) FROM process_sample");
+    defer stmt.deinit();
+    _ = try stmt.step();
+    try testing.expectEqual(@as(i64, 1), stmt.columnI64(0));
+}
+
+test "Writer: writeStatus" {
+    var db = try helpers.makeTestDb();
+    defer db.close();
+    var writer = try Writer.init(&db);
+    defer writer.deinit();
+
+    try writer.writeStatus(helpers.makeStatus(.{}));
+
+    var stmt = try db.prepare("SELECT COUNT(*) FROM status_sample");
+    defer stmt.deinit();
+    _ = try stmt.step();
+    try testing.expectEqual(@as(i64, 1), stmt.columnI64(0));
+}
+
+test "Writer: writeFd" {
+    var db = try helpers.makeTestDb();
+    defer db.close();
+    var writer = try Writer.init(&db);
+    defer writer.deinit();
+
+    try writer.writeFd(helpers.makeFdRecord(.{}));
+
+    var stmt = try db.prepare("SELECT COUNT(*) FROM fd_record");
+    defer stmt.deinit();
+    _ = try stmt.step();
+    try testing.expectEqual(@as(i64, 1), stmt.columnI64(0));
+}
+
+test "Writer: writeNetConnection" {
+    var db = try helpers.makeTestDb();
+    defer db.close();
+    var writer = try Writer.init(&db);
+    defer writer.deinit();
+
+    try writer.writeNetConnection(helpers.makeNetConnection(.{}));
+
+    var stmt = try db.prepare("SELECT COUNT(*) FROM net_connection");
+    defer stmt.deinit();
+    _ = try stmt.step();
+    try testing.expectEqual(@as(i64, 1), stmt.columnI64(0));
+}
+
+test "Writer: upsertAgent insert then update" {
+    var db = try helpers.makeTestDb();
+    defer db.close();
+    var writer = try Writer.init(&db);
+    defer writer.deinit();
+
+    // First call inserts
+    try writer.upsertAgent(42, "claude", "claude --code", 1000);
+    // Second call updates
+    try writer.upsertAgent(42, "claude", "claude --code", 2000);
+
+    var stmt = try db.prepare("SELECT COUNT(*) FROM agent WHERE pid = 42");
+    defer stmt.deinit();
+    _ = try stmt.step();
+    try testing.expectEqual(@as(i64, 1), stmt.columnI64(0));
+}
+
+test "Writer: writeAlert" {
+    var db = try helpers.makeTestDb();
+    defer db.close();
+    var writer = try Writer.init(&db);
+    defer writer.deinit();
+
+    try writer.writeAlert(helpers.makeAlert(.{}));
+
+    var stmt = try db.prepare("SELECT severity, category FROM alert");
+    defer stmt.deinit();
+    _ = try stmt.step();
+    try testing.expectEqualStrings("warning", stmt.columnText(0));
+    try testing.expectEqualStrings("cpu", stmt.columnText(1));
+}
+
+test "Writer: writeFingerprint upsert" {
+    var db = try helpers.makeTestDb();
+    defer db.close();
+    var writer = try Writer.init(&db);
+    defer writer.deinit();
+
+    try writer.writeFingerprint(.{
+        .pid = 42,
+        .comm = "claude",
+        .avg_cpu = 10.0,
+        .avg_rss_kb = 50000,
+        .avg_threads = 5,
+        .avg_fd_count = 20,
+        .avg_net_conns = 3,
+        .dominant_phase = "active",
+        .sample_count = 100,
+        .updated_at = 1000,
+    });
+
+    // Upsert with new values
+    try writer.writeFingerprint(.{
+        .pid = 42,
+        .comm = "claude",
+        .avg_cpu = 20.0,
+        .avg_rss_kb = 60000,
+        .avg_threads = 6,
+        .avg_fd_count = 25,
+        .avg_net_conns = 4,
+        .dominant_phase = "burst",
+        .sample_count = 200,
+        .updated_at = 2000,
+    });
+
+    var stmt = try db.prepare("SELECT COUNT(*) FROM fingerprint WHERE pid = 42");
+    defer stmt.deinit();
+    _ = try stmt.step();
+    try testing.expectEqual(@as(i64, 1), stmt.columnI64(0)); // only one row
+}
+
+test "Writer: transaction begin/commit" {
+    var db = try helpers.makeTestDb();
+    defer db.close();
+    var writer = try Writer.init(&db);
+    defer writer.deinit();
+
+    try writer.beginTransaction();
+    try writer.writeSample(helpers.makeSample(.{ .pid = 1 }));
+    try writer.writeSample(helpers.makeSample(.{ .pid = 2 }));
+    try writer.commitTransaction();
+
+    var stmt = try db.prepare("SELECT COUNT(*) FROM process_sample");
+    defer stmt.deinit();
+    _ = try stmt.step();
+    try testing.expectEqual(@as(i64, 2), stmt.columnI64(0));
+}
+
+test "Writer: transaction rollback" {
+    var db = try helpers.makeTestDb();
+    defer db.close();
+    var writer = try Writer.init(&db);
+    defer writer.deinit();
+
+    try writer.beginTransaction();
+    try writer.writeSample(helpers.makeSample(.{}));
+    try writer.rollbackTransaction();
+
+    var stmt = try db.prepare("SELECT COUNT(*) FROM process_sample");
+    defer stmt.deinit();
+    _ = try stmt.step();
+    try testing.expectEqual(@as(i64, 0), stmt.columnI64(0));
+}
+
+test "Writer: writeBaseline" {
+    var db = try helpers.makeTestDb();
+    defer db.close();
+    var writer = try Writer.init(&db);
+    defer writer.deinit();
+
+    try writer.writeBaseline(.{
+        .comm = "claude",
+        .version = "1.0",
+        .avg_cpu = 10.0,
+        .avg_rss_kb = 50000,
+        .avg_threads = 5,
+        .avg_fd_count = 20,
+        .avg_net_conns = 3,
+        .dominant_phase = "active",
+        .sample_count = 100,
+        .created_at = 1000,
+        .label = "test",
+    });
+
+    var stmt = try db.prepare("SELECT COUNT(*) FROM fingerprint_baseline");
+    defer stmt.deinit();
+    _ = try stmt.step();
+    try testing.expectEqual(@as(i64, 1), stmt.columnI64(0));
+}

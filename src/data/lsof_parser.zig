@@ -3,7 +3,7 @@ const types = @import("types.zig");
 const writer_mod = @import("../store/writer.zig");
 
 /// Import a .lsof file into SQLite
-pub fn importLsofFile(path: []const u8, writer: *writer_mod.Writer) !ImportResult {
+pub fn importLsofFile(alloc: std.mem.Allocator, path: []const u8, writer: *writer_mod.Writer) !ImportResult {
     var result = ImportResult{};
 
     // Extract PID and timestamp from filename
@@ -14,15 +14,15 @@ pub fn importLsofFile(path: []const u8, writer: *writer_mod.Writer) !ImportResul
     const file = std.fs.openFileAbsolute(path, .{}) catch return result;
     defer file.close();
 
-    var buf_reader = std.io.bufferedReader(file.reader());
-    const reader = buf_reader.reader();
-    var line_buf: [4096]u8 = undefined;
+    const data = file.readToEndAlloc(alloc, 16 * 1024 * 1024) catch return result;
+    defer alloc.free(data);
 
+    var lines = std.mem.splitScalar(u8, data, '\n');
     // Skip header line
-    _ = reader.readUntilDelimiter(&line_buf, '\n') catch return result;
+    _ = lines.next();
 
     var fd_num: i32 = 0;
-    while (reader.readUntilDelimiter(&line_buf, '\n')) |line| {
+    while (lines.next()) |line| {
         if (line.len == 0) continue;
         result.lines_read += 1;
 
@@ -59,8 +59,6 @@ pub fn importLsofFile(path: []const u8, writer: *writer_mod.Writer) !ImportResul
         };
         result.fds_written += 1;
         fd_num += 1;
-    } else |err| {
-        if (err != error.EndOfStream) return err;
     }
 
     return result;
@@ -101,3 +99,29 @@ pub const ImportResult = struct {
     fds_written: usize = 0,
     write_errors: usize = 0,
 };
+
+const testing = std.testing;
+
+test "parseFilename: valid lsof filename" {
+    const result = parseFilename("20260201T230250.111574346_64493.lsof");
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(i32, 64493), result.?.pid);
+}
+
+test "parseFilename: missing underscore returns null" {
+    try testing.expect(parseFilename("invalid.lsof") == null);
+}
+
+test "parseFilename: too short timestamp" {
+    try testing.expect(parseFilename("short_123.lsof") == null);
+}
+
+test "parseFilename: bad pid returns null" {
+    try testing.expect(parseFilename("20260201T230250.111_abc.lsof") == null);
+}
+
+test "parseFilename: valid status filename also works" {
+    const result = parseFilename("20260201T230250.111574346_1234.status");
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(i32, 1234), result.?.pid);
+}

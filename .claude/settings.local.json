@@ -4,7 +4,9 @@
       "Bash(tar:*)",
       "Bash(wc:*)",
       "Bash(python3:*)",
-      "Bash(xxd:*)"
+      "Bash(xxd:*)",
+      "Bash(zig build:*)",
+      "Bash(zig version:*)"
     ]
   }
 }

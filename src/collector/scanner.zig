@@ -23,8 +23,8 @@ pub fn scanForAgents(alloc: Allocator, match_pattern: []const u8) ![]DiscoveredP
     const all_pids = try platform.listPids(alloc);
     defer alloc.free(all_pids);
 
-    var agents = std.ArrayList(DiscoveredProcess).init(alloc);
-    errdefer agents.deinit();
+    var agents: std.ArrayList(DiscoveredProcess) = .empty;
+    errdefer agents.deinit(alloc);
 
     for (all_pids) |pid| {
         const comm = platform.readComm(alloc, pid) catch continue;
@@ -35,13 +35,13 @@ pub fn scanForAgents(alloc: Allocator, match_pattern: []const u8) ![]DiscoveredP
 
         if (matchesPattern(comm, match_pattern) or matchesPattern(cmdline, match_pattern)) {
             // Skip ourselves
-            const my_pid = std.posix.getpid();
+            const my_pid = std.c.getpid();
             if (pid == @as(i32, @intCast(my_pid))) {
                 alloc.free(comm);
                 alloc.free(cmdline);
                 continue;
             }
-            try agents.append(.{
+            try agents.append(alloc, .{
                 .pid = pid,
                 .comm = comm,
                 .cmdline = cmdline,
@@ -52,7 +52,7 @@ pub fn scanForAgents(alloc: Allocator, match_pattern: []const u8) ![]DiscoveredP
         }
     }
 
-    return agents.toOwnedSlice();
+    return agents.toOwnedSlice(alloc);
 }
 
 /// Simple case-insensitive substring match against pipe-separated patterns
@@ -92,4 +92,47 @@ pub fn freeDiscovered(alloc: Allocator, agents: []DiscoveredProcess) void {
         alloc.free(a.cmdline);
     }
     alloc.free(agents);
+}
+
+const testing = std.testing;
+
+test "matchesPattern: basic match" {
+    try testing.expect(matchesPattern("claude", "codex|claude|gemini"));
+}
+
+test "matchesPattern: no match" {
+    try testing.expect(!matchesPattern("nginx", "codex|claude|gemini"));
+}
+
+test "matchesPattern: substring match" {
+    try testing.expect(matchesPattern("my-claude-code", "claude"));
+}
+
+test "matchesPattern: case insensitive" {
+    try testing.expect(matchesPattern("Claude", "claude"));
+    try testing.expect(matchesPattern("CLAUDE", "claude"));
+}
+
+test "matchesPattern: empty pattern" {
+    try testing.expect(!matchesPattern("anything", ""));
+}
+
+test "matchesPattern: empty text" {
+    try testing.expect(!matchesPattern("", "claude"));
+}
+
+test "containsIgnoreCase: basic" {
+    try testing.expect(containsIgnoreCase("Hello World", "hello"));
+    try testing.expect(containsIgnoreCase("Hello World", "WORLD"));
+    try testing.expect(!containsIgnoreCase("Hello", "World"));
+}
+
+test "containsIgnoreCase: needle longer than haystack" {
+    try testing.expect(!containsIgnoreCase("hi", "hello world"));
+}
+
+test "toLower: converts uppercase" {
+    try testing.expectEqual(@as(u8, 'a'), toLower('A'));
+    try testing.expectEqual(@as(u8, 'z'), toLower('Z'));
+    try testing.expectEqual(@as(u8, '1'), toLower('1')); // non-alpha unchanged
 }
